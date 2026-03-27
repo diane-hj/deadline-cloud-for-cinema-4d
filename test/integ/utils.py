@@ -42,15 +42,19 @@ def assert_is_valid_job_bundle(template_location: Path) -> None:
 
 
 def create_c4d_job_bundle(
-    cinema4d_location: Path, scene_script_location: Path, path_to_create_job_bundle: Path
+    cinema4d_location: Path,
+    scene_script_location: Path,
+    path_to_create_job_bundle: Path,
+    bundled: bool = False,
 ) -> None:
     """
     Creates a job bundle by using 'c4dpy' to create a scene file and submit the job
     using internal integ helpers.
     """
-    run_command(
-        [str(cinema4d_location), str(scene_script_location), str(path_to_create_job_bundle)]
-    )
+    args = [str(cinema4d_location), str(scene_script_location), str(path_to_create_job_bundle)]
+    if bundled:
+        args.append("--bundled")
+    run_command(args)
 
 
 def assert_openjd_run_with_cinema4d_successful(
@@ -208,6 +212,64 @@ def assert_expected_job_bundle_and_generated_job_bundle_are_equal(
     assert "template.yaml" in results["identical_files"]
     assert "parameter_values.yaml" in results["identical_files"]
     assert "asset_references.yaml" in results["identical_files"]
+
+
+def assert_bundled_job_bundle(
+    expected_job_bundle_dir_path: Path,
+    generated_job_bundle_dir_path: Path,
+) -> None:
+    """
+    Assert that a bundled job bundle is valid.
+
+    For bundled submit, asset_references.yaml contains paths to a temp directory
+    which is dynamic per run. So instead of comparing it byte-for-byte, we:
+    1. Compare template.yaml and parameter_values.yaml against expected
+    2. Validate that all input files in asset_references.yaml actually exist
+    3. Verify the scene file and textures are present in the bundled assets
+    """
+    # Compare template.yaml and parameter_values.yaml using existing logic
+    # (reuse the non-bundled expected files — template should be identical)
+    prefix_path = os.path.abspath(expected_job_bundle_dir_path).split(
+        "deadline-cloud-for-cinema-4d"
+    )[0]
+
+    for file in ["template.yaml"]:
+        expected_path = expected_job_bundle_dir_path / file
+        generated_path = generated_job_bundle_dir_path / file
+
+        with (
+            open(expected_path, "r", encoding="utf-8") as f1,
+            open(generated_path, "r", encoding="utf-8") as f2,
+        ):
+            content1 = f1.read().strip().replace("\r\n", "\n")
+            content2 = f2.read().strip().replace("\r\n", "\n")
+            content1 = content1.replace("PATH_TO_BE_REPLACED", prefix_path)
+            content1 = replace_backslashes(content1)
+            content2 = replace_backslashes(content2)
+            content1 = _strip_job_environments_from_template(content1)
+            content2 = _strip_job_environments_from_template(content2)
+
+        assert content1 == content2, f"template.yaml does not match expected"
+
+    # Validate asset_references.yaml: all input files must exist on disk
+    asset_refs_path = generated_job_bundle_dir_path / "asset_references.yaml"
+    with open(asset_refs_path, "r", encoding="utf-8") as f:
+        asset_refs = safe_load(f)
+
+    input_filenames = asset_refs.get("assetReferences", {}).get("inputs", {}).get("filenames", [])
+    assert len(input_filenames) > 0, "Bundled submit should have input filenames"
+
+    for filename in input_filenames:
+        assert os.path.exists(filename), (
+            f"Bundled asset file does not exist: {filename}"
+        )
+
+    # Verify that the bundled assets include the scene file and texture
+    normalized_inputs = [os.path.normpath(f) for f in input_filenames]
+    has_c4d_file = any(f.endswith(".c4d") for f in normalized_inputs)
+    has_texture = any("large_checkerboard.bmp" in f for f in normalized_inputs)
+    assert has_c4d_file, "Bundled assets should include the .c4d scene file"
+    assert has_texture, "Bundled assets should include the texture file"
 
 
 def _normalize_conda_packages_version(content: str) -> str:

@@ -5,6 +5,7 @@ from .utils import (
     create_c4d_job_bundle,
     assert_is_valid_job_bundle,
     assert_expected_job_bundle_and_generated_job_bundle_are_equal,
+    assert_bundled_job_bundle,
     assert_openjd_run_with_cinema4d_successful,
     assert_all_images_close,
 )
@@ -76,6 +77,65 @@ def test_integ(
     assert_expected_job_bundle_and_generated_job_bundle_are_equal(
         expected_job_bundle, job_bundle_generated
     )
+
+    assert_openjd_run_with_cinema4d_successful(
+        cinema4d_location,
+        job_bundle_generated / "template.yaml",
+        job_bundle_generated / "parameter_values.yaml",
+    )
+
+    expected_job_output = test_scene_folder_location / "expected_job_output"
+
+    assert_all_images_close(
+        expected_job_output / "renders",
+        job_bundle_generated / "renders",
+    )
+
+    # Clean up if the test was successful
+    rmtree(job_bundle_generated, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "test_name",
+    [
+        "physical_textured",
+    ],
+)
+def test_integ_bundled(
+    cinema4d_location: Path,
+    test_scenes_folder_location: Path,
+    test_name: str,
+) -> None:
+    """
+    Performs integration testing for Cinema 4D rendering with bundled submit.
+
+    This tests the bundled submit workflow where the scene and all assets are
+    exported to a self-contained temporary directory before submission.
+    It verifies that:
+    1. The job bundle is valid
+    2. The template matches the non-bundled expected template
+    3. All bundled asset files exist on disk (scene + textures)
+    4. The rendering job executes successfully
+    5. Rendered images match expected output
+    """
+
+    c4dpy_location = cinema4d_location / "c4dpy"
+    test_scene_folder_location = test_scenes_folder_location / test_name
+
+    test_scene_script_location = test_scene_folder_location / "scene" / "scene.py"
+    job_bundle_generated = test_scene_folder_location / "generated_bundle"
+    os.makedirs(job_bundle_generated, exist_ok=True)
+
+    create_c4d_job_bundle(
+        c4dpy_location, test_scene_script_location, job_bundle_generated, bundled=True
+    )
+
+    assert_is_valid_job_bundle(job_bundle_generated / "template.yaml")
+
+    # Reuse the non-bundled expected bundle for template comparison;
+    # asset_references are validated separately since paths are dynamic.
+    expected_job_bundle = test_scene_folder_location / "expected_job_bundle"
+    assert_bundled_job_bundle(expected_job_bundle, job_bundle_generated)
 
     assert_openjd_run_with_cinema4d_successful(
         cinema4d_location,

@@ -77,6 +77,7 @@ def internal_create_job_bundle(
     enable_tile_rendering: bool = False,
     tiles_columns: int = 2,
     tiles_rows: int = 2,
+    export_job_bundle_to_temp: bool = False,
 ):
     """
     This function mimics the call that Cinema 4D submitter does to generate the job bundle.
@@ -87,6 +88,7 @@ def internal_create_job_bundle(
     render_settings.enable_tile_rendering = enable_tile_rendering
     render_settings.tiles_columns = tiles_columns
     render_settings.tiles_rows = tiles_rows
+    render_settings.export_job_bundle_to_temp = export_job_bundle_to_temp
 
     doc = c4d.documents.GetActiveDocument()
 
@@ -94,6 +96,14 @@ def internal_create_job_bundle(
 
     auto_detected_attachments = setup_auto_detected_attachments(takes["take_data_list"])
     attachments = setup_attachments(render_settings)
+
+    temp_dir = None
+    if export_job_bundle_to_temp:
+        import tempfile
+        import os
+
+        scene_dir = doc.GetDocumentPath()
+        temp_dir = tempfile.mkdtemp(prefix="scene_with_assets_", dir=scene_dir)
 
     # auto_detected_attachments is equal to asset references in create job bundle callback.
     create_job_bundle(
@@ -103,4 +113,5 @@ def internal_create_job_bundle(
         asset_references=auto_detected_attachments,
         queue_parameters=sample_queue_params(doc),
         attachments=attachments,
+        temp_dir=temp_dir,
     )

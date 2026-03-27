@@ -76,7 +76,8 @@ def main():
     c4d.documents.InsertBaseDocument(doc)
     c4d.EventAdd()
 
-    internal_create_job_bundle(save_dir)
+    bundled = len(sys.argv) > 2 and sys.argv[2] == "--bundled"
+    internal_create_job_bundle(save_dir, export_job_bundle_to_temp=bundled)
 
 
 if __name__ == "__main__":
