@@ -50,17 +50,12 @@ pre-install-commands = [
 features = ["gui"]
 
 [[envs.integ-ci.matrix]]
-# cinema4d = ["2025"]
-# python = ["3.11"]
-
-# [[envs.integ-ci.matrix]]
 cinema4d = ["2026"]
 python = ["3.11"]
 
 [envs.integ-ci.env-vars]
 C4D_VERSION = "{matrix:cinema4d}"
 PYTHONIOENCODING = "utf-8"
-LOGNAME = "SYSTEM"
 
 [envs.integ-ci.scripts]
 setup = "python ./pipeline/setup-runner.py --versions {matrix:cinema4d} {args}"

@@ -41,7 +41,13 @@ def cinema4d_location() -> Path:
 
 @pytest.fixture(autouse=True)
 def _set_c4d_python_path():
-    """Set C4DPYTHONPATH311 so c4dpy can find packages installed in the hatch venv."""
+    """Set C4DPYTHONPATH311 so c4dpy can find packages installed in the hatch venv.
+
+    c4dpy uses Cinema 4D's bundled Python, not the hatch venv's Python.
+    Without this, c4dpy cannot find the 'deadline' package (editable install in src/)
+    or its dependencies like PySide6 (installed in the venv's site-packages).
+    C4DPYTHONPATH311 is Cinema 4D's mechanism for adding extra Python paths.
+    """
     # Include the project src/ dir (for editable install) and site-packages (for dependencies like PySide6)
     project_src = str(Path(__file__).parent.parent.parent / "src")
     all_paths = [project_src] + site.getsitepackages()

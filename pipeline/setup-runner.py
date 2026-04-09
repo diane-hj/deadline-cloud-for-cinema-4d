@@ -11,9 +11,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import boto3
+from botocore.config import Config
 
-# Installer details from BealineCondaRecipe-Cinema4D conda recipes.
-# S3 paths are relative to the INSTALLER_BUCKET (common-bealinerezpackage-resources-bucket).
+
 C4D_INSTALLERS = {
     "2025": {
         "windows": {
@@ -42,7 +43,6 @@ C4D_INSTALLERS = {
     },
 }
 
-# Where Cinema 4D gets installed/extracted to
 C4D_INSTALL_PATHS = {
     "2025": {
         "windows": Path("C:/Program Files/Maxon Cinema 4D 2025"),
@@ -64,13 +64,26 @@ def run(cmd, check=True):
     return result
 
 
-def download_from_s3(s3_key, local_path):
-    """Download a file from the DCC installer bucket."""
+def download_from_s3(s3_path, local_path):
+    """Download a file from S3 with expected bucket owner verification."""
     bucket = os.environ.get("INSTALLER_BUCKET")
     if not bucket:
         print("ERROR: INSTALLER_BUCKET not set")
         sys.exit(1)
-    run(["aws", "s3", "cp", f"s3://{bucket}/{s3_key}", str(local_path), "--no-progress"])
+
+    expected_bucket_owner = os.environ.get("INSTALLER_BUCKET_EXPECTED_OWNER")
+    if not expected_bucket_owner:
+        raise ValueError("INSTALLER_BUCKET_EXPECTED_OWNER environment variable is required")
+    if not (expected_bucket_owner.isdigit() and len(expected_bucket_owner) == 12):
+        raise ValueError("INSTALLER_BUCKET_EXPECTED_OWNER must be a 12-digit AWS Account ID")
+
+    config = Config(read_timeout=300, connect_timeout=60, retries={"max_attempts": 2})
+    s3 = boto3.client("s3", config=config)
+
+    print(f"Downloading s3://{bucket}/{s3_path} to {local_path}")
+    s3.download_file(
+        bucket, s3_path, str(local_path), ExtraArgs={"ExpectedBucketOwner": expected_bucket_owner}
+    )
 
 
 def verify_checksum(file_path, expected_checksum):
@@ -154,9 +167,6 @@ def setup_windows(versions):
             run(["powershell", "-Command", "Get-ChildItem $env:LOCALAPPDATA -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '*Maxon*' }"], check=False)
             sys.exit(1)
 
-    # Smoke test disabled — c4dpy may require interactive Maxon login
-    # Actual tests use Commandline.exe via the adaptor instead
-
     # Configure RLM licensing by appending to config.txt
     rlm_license = os.environ.get("RLM_LICENSE")
     if rlm_license:
@@ -174,90 +184,20 @@ def setup_windows(versions):
             else:
                 print(f"WARNING: config.txt not found at {config_txt}")
 
-        # Install pywin32 and deadline package into C4D's Python
-        c4d_site_packages = install_dir / "resource" / "modules" / "python" / "libs" / "win64" / "lib" / "site-packages"
-        c4d_python = install_dir / "resource" / "modules" / "python" / "libs" / "win64" / "python.exe"
-        if c4d_python.exists():
-            run([str(c4d_python), "-m", "ensurepip"], check=False)
-            if not (c4d_site_packages / "pywin32.pth").exists():
-                print("Installing pywin32 into C4D's Python...")
-                run([str(c4d_python), "-m", "pip", "install", "pywin32==308", "-t", str(c4d_site_packages)])
-                # Copy pywin32 DLLs to the dlls folder
-                dlls_dir = install_dir / "resource" / "modules" / "python" / "libs" / "win64" / "dlls"
-                pywin32_sys = c4d_site_packages / "pywin32_system32"
-                if pywin32_sys.exists() and dlls_dir.exists():
-                    for dll in pywin32_sys.glob("*.dll"):
-                        shutil.copy(str(dll), str(dlls_dir))
-                        print(f"Copied {dll.name} to {dlls_dir}")
-            # Install deadline-cloud-for-cinema-4d into C4D's Python so c4dpy can find it
-            print("Installing deadline-cloud-for-cinema-4d into C4D's Python...")
-            run([str(c4d_python), "-m", "pip", "install", "-e", ".", "-t", str(c4d_site_packages)], check=False)
-
-    # Set encoding for C4D Python
-    os.environ["PYTHONIOENCODING"] = "utf-8"
-
-
-def setup_linux(versions):
-    """Install Cinema 4D on Linux for each version."""
-    for version in versions:
-        install_dir = C4D_INSTALL_PATHS[version]["linux"]
-        marker = install_dir / ".installed"
-
-        if marker.exists():
-            print(f"Cinema 4D {version} already installed at {install_dir}")
-            # Verify c4dpy exists, otherwise reinstall
-            c4dpy = install_dir / "c4dpy"
-            if not c4dpy.exists():
-                print(f"c4dpy not found, removing marker and reinstalling...")
-                marker.unlink()
-            else:
-                continue
-
-        print(f"Installing Cinema 4D {version}...")
-        installer_info = C4D_INSTALLERS[version]["linux"]
-        local_installer = Path(f"/tmp/{Path(installer_info['s3_key']).name}")
-
-        download_from_s3(installer_info["s3_key"], local_installer)
-        verify_checksum(local_installer, installer_info["sha256"])
-
-        # Both 2025 and 2026 Linux use zip (portable/zero-install)
-        # Extract and move the cinema4d folder to install path
-        extract_dir = Path("/tmp/c4d_extract")
-        run(["unzip", "-o", str(local_installer), "-d", str(extract_dir)])
-
-        # Find the extracted cinema4d directory (e.g., cinema4dr2025.301/)
-        extracted_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
-        if extracted_dirs:
-            install_dir.parent.mkdir(parents=True, exist_ok=True)
-            if install_dir.exists():
-                shutil.rmtree(install_dir)
-            shutil.move(str(extracted_dirs[0]), str(install_dir))
-
-        # Patch RPATHs for shared libraries (from conda recipe)
-        for so_file in install_dir.glob("lib64/*.so.*"):
-            run(["patchelf", "--add-rpath", "$ORIGIN/.", str(so_file)], check=False)
-        for xso_file in install_dir.glob("bin/corelibs/*.xso64"):
-            run(["patchelf", "--add-rpath", "$ORIGIN/../../lib64", str(xso_file)], check=False)
-
-        shutil.rmtree(extract_dir, ignore_errors=True)
-        local_installer.unlink(missing_ok=True)
-
-        if install_dir.exists():
-            print(f"SUCCESS: Cinema 4D {version} installed at {install_dir}")
-            print(f"Contents: {list(install_dir.iterdir())[:20]}")
-            bin_dir = install_dir / "bin"
-            if bin_dir.exists():
-                print(f"bin/ contents: {list(bin_dir.iterdir())[:20]}")
-            # Create c4dpy symlink pointing to bin/Commandline for test compatibility
-            c4dpy_link = install_dir / "c4dpy"
-            commandline = install_dir / "bin" / "Commandline"
-            if commandline.exists() and not c4dpy_link.exists():
-                c4dpy_link.symlink_to(commandline)
-                print(f"Created symlink: {c4dpy_link} -> {commandline}")
-            marker.touch()
-        else:
-            print(f"ERROR: Cinema 4D {version} not found at {install_dir}")
-            sys.exit(1)
+        # TODO: pywin32 may be needed on some environments. Uncomment if c4dpy fails with COM errors.
+        # c4d_site_packages = install_dir / "resource" / "modules" / "python" / "libs" / "win64" / "lib" / "site-packages"
+        # c4d_python = install_dir / "resource" / "modules" / "python" / "libs" / "win64" / "python.exe"
+        # if c4d_python.exists():
+        #     run([str(c4d_python), "-m", "ensurepip"], check=False)
+        #     if not (c4d_site_packages / "pywin32.pth").exists():
+        #         print("Installing pywin32 into C4D's Python...")
+        #         run([str(c4d_python), "-m", "pip", "install", "pywin32==308", "-t", str(c4d_site_packages)])
+        #         dlls_dir = install_dir / "resource" / "modules" / "python" / "libs" / "win64" / "dlls"
+        #         pywin32_sys = c4d_site_packages / "pywin32_system32"
+        #         if pywin32_sys.exists() and dlls_dir.exists():
+        #             for dll in pywin32_sys.glob("*.dll"):
+        #                 shutil.copy(str(dll), str(dlls_dir))
+        #                 print(f"Copied {dll.name} to {dlls_dir}")
 
 
 if __name__ == "__main__":
@@ -275,8 +215,6 @@ if __name__ == "__main__":
 
     if system == "Windows":
         setup_windows(args.versions)
-    elif system == "Linux":
-        setup_linux(args.versions)
     else:
         print(f"Unsupported platform: {system}")
         sys.exit(1)
