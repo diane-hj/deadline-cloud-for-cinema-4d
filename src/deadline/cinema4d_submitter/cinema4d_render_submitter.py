@@ -561,112 +561,107 @@ def save_job_bundle_files(
         deadline_yaml_dump(asset_references.to_dict(), f, indent=1)
 
 
-def _build_and_attach_adaptor_bundle(
-    job_bundle_path: Path, asset_references: AssetReferences
-) -> Optional[Path]:
+def _find_prebuilt_adaptor_bundle() -> Optional[Path]:
     """
-    Build the adaptor bundle and add it to the job's input directories.
+    Locate the pre-built adaptor bundle.
 
-    Returns the path to the bundle directory, or None if the build fails.
+    The bundle is built ahead of time by running:
+        python scripts/adaptor_bundle.py
+
+    It is expected at <repo_or_install_root>/adaptor_bundle/
+    or in the dependency_bundle zip that the installer creates.
     """
-    try:
-        # Import here to avoid circular imports and to keep the dependency optional
-        # during development (the script lives in scripts/ not in the package).
-        import subprocess
-        import sys
-
-        repo_root = Path(__file__).parent.parent.parent.parent
-        adaptor_bundle_script = repo_root / "scripts" / "adaptor_bundle.py"
-
-        # Build the bundle into a directory next to the job bundle
-        bundle_output = job_bundle_path / "adaptor_bundle"
-
-        if adaptor_bundle_script.exists():
-            # Run the bundle script as a subprocess
-            subprocess.run(
-                [sys.executable, str(adaptor_bundle_script), "--output", str(bundle_output)],
-                check=True,
-            )
-        else:
-            # Fallback: build inline if the script isn't available (e.g. installed package)
-            _build_adaptor_bundle_inline(bundle_output)
-
-        if bundle_output.exists():
-            asset_references.input_directories.add(str(bundle_output))
-            return bundle_output
-    except Exception:
-        import traceback
-
-        print("Warning: Failed to build adaptor bundle. Falling back to conda adaptor.")
-        traceback.print_exc()
+    # Check relative to the submitter package (works for both dev and installed)
+    # Layout: src/deadline/cinema4d_submitter/ -> go up to repo root
+    pkg_dir = Path(__file__).parent
+    candidates = [
+        pkg_dir.parent.parent.parent / "adaptor_bundle",  # repo root: <root>/adaptor_bundle/
+        pkg_dir.parent / "cinema4d_adaptor",  # installed: deadline/cinema4d_adaptor/ (adaptor source is co-installed)
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            # Verify it looks like a valid bundle (has the adaptor source)
+            if (candidate / "deadline" / "cinema4d_adaptor").is_dir():
+                return candidate
+            # For the co-installed case, the adaptor source is the candidate itself
+            if candidate.name == "cinema4d_adaptor" and (candidate / "Cinema4DAdaptor").is_dir():
+                return None  # Fall through to inline copy approach
     return None
 
 
-def _build_adaptor_bundle_inline(output_dir: Path) -> None:
+def _attach_adaptor_bundle(
+    job_bundle_path: Path, asset_references: AssetReferences
+) -> Optional[Path]:
     """
-    Build the adaptor bundle inline when the build script is not available.
-    This copies the adaptor source and installs runtime deps.
+    Attach the adaptor bundle to the job as an input directory.
+
+    First tries to find a pre-built bundle (from scripts/adaptor_bundle.py).
+    If not found, falls back to copying the adaptor source from the installed package.
+
+    Returns the path to the bundle directory, or None if it fails.
     """
-    import subprocess
-    import sys
+    try:
+        bundle_dst = job_bundle_path / "adaptor_bundle"
 
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True)
+        # Try pre-built bundle first
+        prebuilt = _find_prebuilt_adaptor_bundle()
+        if prebuilt:
+            shutil.copytree(str(prebuilt), str(bundle_dst))
+            asset_references.input_directories.add(str(bundle_dst))
+            return bundle_dst
 
-    # Install runtime dependencies
-    subprocess.run(
-        [
-            sys.executable, "-m", "pip", "install",
-            "--target", str(output_dir),
-            "--only-binary=:all:",
-            "openjd-adaptor-runtime>=0.7,<0.10",
-            "deadline>=0.55.1,<0.56",
-        ],
-        check=True,
-    )
+        # Fallback: copy just the adaptor source (deps must be on worker via conda)
+        if bundle_dst.exists():
+            shutil.rmtree(bundle_dst)
+        bundle_dst.mkdir(parents=True)
 
-    # Copy adaptor source
-    adaptor_src = Path(__file__).parent.parent / "cinema4d_adaptor"
-    adaptor_dst = output_dir / "deadline" / "cinema4d_adaptor"
-    if adaptor_dst.exists():
-        shutil.rmtree(adaptor_dst)
-    shutil.copytree(str(adaptor_src), str(adaptor_dst))
+        adaptor_src = Path(__file__).parent.parent / "cinema4d_adaptor"
+        adaptor_dst = bundle_dst / "deadline" / "cinema4d_adaptor"
+        shutil.copytree(str(adaptor_src), str(adaptor_dst))
 
-    # Ensure deadline/ is a namespace package (no __init__.py)
-    deadline_init = output_dir / "deadline" / "__init__.py"
-    if deadline_init.exists():
-        deadline_init.unlink()
+        # Ensure deadline/ is a namespace package
+        deadline_init = bundle_dst / "deadline" / "__init__.py"
+        if deadline_init.exists():
+            deadline_init.unlink()
 
-    # Create a _version.py if it doesn't exist (generated at build time by hatch-vcs)
-    version_file = adaptor_dst / "_version.py"
-    if not version_file.exists():
-        version_file.write_text(
-            '# Auto-generated for adaptor bundle\n'
-            'version = "0.0.0.dev0"\n'
-            'version_tuple = (0, 0, 0, "dev0")\n'
+        # Create _version.py if missing
+        version_file = adaptor_dst / "_version.py"
+        if not version_file.exists():
+            version_file.write_text(
+                '# Auto-generated for adaptor bundle\n'
+                'version = "0.0.0.dev0"\n'
+                'version_tuple = (0, 0, 0, "dev0")\n'
+            )
+
+        # Create wrapper scripts
+        bin_dir = bundle_dst / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        unix_wrapper = bin_dir / "cinema4d-openjd"
+        unix_wrapper.write_text(
+            '#!/bin/bash\n'
+            'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+            'BUNDLE_DIR="$(dirname "$SCRIPT_DIR")"\n'
+            'export PYTHONPATH="${BUNDLE_DIR}:${PYTHONPATH:-}"\n'
+            'exec python3 -m deadline.cinema4d_adaptor.Cinema4DAdaptor "$@"\n'
+        )
+        unix_wrapper.chmod(0o755)
+        win_wrapper = bin_dir / "cinema4d-openjd.cmd"
+        win_wrapper.write_text(
+            '@echo off\r\n'
+            'set "SCRIPT_DIR=%~dp0"\r\n'
+            'set "BUNDLE_DIR=%SCRIPT_DIR%.."\r\n'
+            'set "PYTHONPATH=%BUNDLE_DIR%;%PYTHONPATH%"\r\n'
+            'python -m deadline.cinema4d_adaptor.Cinema4DAdaptor %*\r\n'
         )
 
-    # Create wrapper scripts
-    bin_dir = output_dir / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    unix_wrapper = bin_dir / "cinema4d-openjd"
-    unix_wrapper.write_text(
-        '#!/bin/bash\n'
-        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
-        'BUNDLE_DIR="$(dirname "$SCRIPT_DIR")"\n'
-        'export PYTHONPATH="${BUNDLE_DIR}:${PYTHONPATH:-}"\n'
-        'exec python3 -m deadline.cinema4d_adaptor.Cinema4DAdaptor "$@"\n'
-    )
-    unix_wrapper.chmod(0o755)
-    win_wrapper = bin_dir / "cinema4d-openjd.cmd"
-    win_wrapper.write_text(
-        '@echo off\r\n'
-        'set "SCRIPT_DIR=%~dp0"\r\n'
-        'set "BUNDLE_DIR=%SCRIPT_DIR%.."\r\n'
-        'set "PYTHONPATH=%BUNDLE_DIR%;%PYTHONPATH%"\r\n'
-        'python -m deadline.cinema4d_adaptor.Cinema4DAdaptor %*\r\n'
-    )
+        asset_references.input_directories.add(str(bundle_dst))
+        return bundle_dst
+    except Exception:
+        import traceback
+
+        print("Warning: Failed to attach adaptor bundle. Falling back to conda adaptor.")
+        traceback.print_exc()
+    return None
 
 
 def create_job_bundle(
@@ -745,7 +740,7 @@ def create_job_bundle(
     )
 
     # Build the adaptor bundle and attach it to the job
-    adaptor_bundle_dir = _build_and_attach_adaptor_bundle(job_bundle_path, asset_references)
+    adaptor_bundle_dir = _attach_adaptor_bundle(job_bundle_path, asset_references)
     if adaptor_bundle_dir:
         parameter_values.append({"name": "AdaptorBundlePath", "value": str(adaptor_bundle_dir)})
 
