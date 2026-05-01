@@ -23,3 +23,4 @@ __pycache__/
 
 DeadlineCloudForCinema4DSubmitter-*
 /adaptor_bundle/
+src/deadline/cinema4d_submitter/adaptor_bundle/

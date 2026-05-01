@@ -565,27 +565,13 @@ def _find_prebuilt_adaptor_bundle() -> Optional[Path]:
     """
     Locate the pre-built adaptor bundle.
 
-    The bundle is built ahead of time by running:
-        python scripts/adaptor_bundle.py
-
-    It is expected at <repo_or_install_root>/adaptor_bundle/
-    or in the dependency_bundle zip that the installer creates.
+    The bundle is built by hatch during 'hatch build' and placed inside
+    the submitter package at cinema4d_submitter/adaptor_bundle/.
     """
-    # Check relative to the submitter package (works for both dev and installed)
-    # Layout: src/deadline/cinema4d_submitter/ -> go up to repo root
-    pkg_dir = Path(__file__).parent
-    candidates = [
-        pkg_dir.parent.parent.parent / "adaptor_bundle",  # repo root: <root>/adaptor_bundle/
-        pkg_dir.parent / "cinema4d_adaptor",  # installed: deadline/cinema4d_adaptor/ (adaptor source is co-installed)
-    ]
-    for candidate in candidates:
-        if candidate.is_dir():
-            # Verify it looks like a valid bundle (has the adaptor source)
-            if (candidate / "deadline" / "cinema4d_adaptor").is_dir():
-                return candidate
-            # For the co-installed case, the adaptor source is the candidate itself
-            if candidate.name == "cinema4d_adaptor" and (candidate / "Cinema4DAdaptor").is_dir():
-                return None  # Fall through to inline copy approach
+    # The bundle lives inside the submitter package directory
+    bundle_path = Path(__file__).parent / "adaptor_bundle"
+    if bundle_path.is_dir() and (bundle_path / "deadline" / "cinema4d_adaptor").is_dir():
+        return bundle_path
     return None
 
 
