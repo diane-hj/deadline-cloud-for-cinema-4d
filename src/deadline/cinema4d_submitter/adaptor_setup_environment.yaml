@@ -1,0 +1,82 @@
+specificationVersion: 'jobtemplate-2023-09'
+parameterDefinitions:
+- name: AdaptorBundlePath
+  type: PATH
+  objectType: DIRECTORY
+  dataFlow: IN
+  description: >
+    Path to the adaptor bundle directory attached with the job.
+    When present, the adaptor from this bundle is used instead of
+    a conda-installed or pip-installed adaptor.
+environment:
+  name: AdaptorSetup
+  description: >
+    Configures the environment to use the adaptor bundle attached to the job.
+    Sets PYTHONPATH and PATH so that cinema4d-openjd resolves to the bundled
+    adaptor. Falls back to the conda/pip-installed adaptor if no bundle is present.
+  script:
+    actions:
+      onEnter:
+        command: '{{Env.File.Enter}}'
+    embeddedFiles:
+    - name: Enter
+      filename: adaptor-setup-enter.sh
+      type: TEXT
+      runnable: true
+      data: |
+        #!/bin/bash
+        set -euo pipefail
+
+        BUNDLE_PATH="{{Param.AdaptorBundlePath}}"
+
+        if [ -z "$BUNDLE_PATH" ] || [ ! -d "$BUNDLE_PATH" ]; then
+          echo "AdaptorBundlePath is not set or does not exist."
+          echo "Falling back to conda/pip-installed adaptor."
+          exit 0
+        fi
+
+        echo "Using adaptor bundle at: $BUNDLE_PATH"
+
+        # Add the bundle to PYTHONPATH so Python can find the adaptor modules
+        {{Env.File.InitialVars}}
+        export PYTHONPATH="${BUNDLE_PATH}:${PYTHONPATH:-}"
+        export PATH="${BUNDLE_PATH}/bin:${PATH}"
+        {{Env.File.CaptureVars}}
+
+        echo "Adaptor bundle configured successfully."
+        echo "  PYTHONPATH includes: $BUNDLE_PATH"
+        echo "  PATH includes: ${BUNDLE_PATH}/bin"
+    - name: InitialVars
+      filename: initial-vars
+      type: TEXT
+      runnable: true
+      data: |
+        #!/usr/bin/env python3
+        import os, json
+        envfile = "{{Session.WorkingDirectory}}/.envInitial"
+        with open(envfile, "w", encoding="utf8") as f:
+            json.dump(dict(os.environ), f)
+    - name: CaptureVars
+      filename: capture-vars
+      type: TEXT
+      runnable: true
+      data: |
+        #!/usr/bin/env python3
+        import os, json, sys
+        envfile = "{{Session.WorkingDirectory}}/.envInitial"
+        if os.path.isfile(envfile):
+            with open(envfile, "r", encoding="utf8") as f:
+                before = json.load(f)
+        else:
+            print("No initial environment found, must run Env.File.InitialVars script first")
+            sys.exit(1)
+        after = dict(os.environ)
+
+        put = {k: v for k, v in after.items() if v != before.get(k)}
+        delete = {k for k in before if k not in after}
+
+        for k, v in put.items():
+            print(f"updating {k}={v}")
+            print(f"openjd_env: {k}={v}")
+        for k in delete:
+            print(f"openjd_unset_env: {k}")

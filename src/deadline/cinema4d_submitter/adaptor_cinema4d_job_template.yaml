@@ -109,6 +109,19 @@ parameterDefinitions:
   allowedValues:
   - '1'
   - '0'
+- name: AdaptorBundlePath
+  type: PATH
+  objectType: DIRECTORY
+  dataFlow: IN
+  userInterface:
+    control: HIDDEN
+    label: Adaptor Bundle Path
+    groupLabel: Cinema4D Settings
+  description: >
+    Path to the adaptor bundle directory attached with the job.
+    Automatically set by the submitter. When present, the bundled adaptor
+    is used instead of a conda-installed adaptor.
+  default: ''
 steps:
 - name: Render
   parameterSpace:
